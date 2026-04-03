@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asterisk HTML5</title>
+    <style>
+        body {
+            background-color: #111;
+            color: #eee;
+            font-family: "Courier New", Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 40px;
+            user-select: none;
+        }
+        .container {
+            position: relative;
+        }
+        canvas {
+            background-color: black;
+            border: 2px solid #555;
+            image-rendering: pixelated; 
+            width: 600px; 
+            height: 400px;
+            display: block;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            width: 600px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        .header div {
+            flex: 1;
+            text-align: center;
+        }
+        .header div:first-child { text-align: left; }
+        .header div:last-child { text-align: right; color: gold; }
+        
+        .instructions {
+            margin-top: 15px;
+            color: white;
+            font-weight: bold;
+            text-align: center;
+            line-height: 1.6;
+        }
+        .legend {
+            font-size: 0.9em; 
+            margin-top: 10px; 
+            color: #ccc;
+            background: #222;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+        .legend span { 
+            margin: 0 10px; 
+            display: inline-block;
+        }
+        
+        #gameover-screen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.85);
+            border: 2px solid white;
+            padding: 20px 40px;
+            text-align: center;
+            display: none;
+            box-shadow: 0 0 15px rgba(255, 0, 0, 0.5);
+        }
+        #gameover-screen h2 {
+            color: red;
+            margin-top: 0;
+            text-shadow: 0 0 5px red;
+        }
+        button {
+            background-color: #ddd;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            font-family: inherit;
+            cursor: pointer;
+            font-weight: bold;
+            transition: 0.2s;
+        }
+        button:hover {
+            background-color: white;
+            box-shadow: 0 0 10px white;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div id="levelDisplay">Level 1</div>
+        <div id="scoreDisplay">Completed: 0</div>
+        <div id="recordDisplay">Record: 0 Levels</div>
+    </div>
+
+    <div class="container">
+        <canvas id="gameCanvas" width="300" height="200"></canvas>
+        <div id="gameover-screen">
+            <h2>Game Over</h2>
+            <p id="finalScore">Completed: 0 Levels</p>
+            <button id="restartBtn">Play Again</button>
+        </div>
+    </div>
+
+    <div class="instructions">
+        Player 1: Press & Hold ENTER key to rise, release to fall.<br>
+        <div class="legend">
+            <strong>Level Modifiers:</strong><br>
+            <span style="color: #ffff00">■ Normal</span>
+            <span style="color: #00ffff">■ Shield (Invincible)</span>
+            <span style="color: #00ff00">■ Slow (Half Speed)</span>
+            <span style="color: #ff0000">■ Fast (Double Speed)</span>
+            <span style="color: #ff00ff">■ Reverse (Inverted Controls)</span>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const levelDisplay = document.getElementById('levelDisplay');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const recordDisplay = document.getElementById('recordDisplay');
+        const gameOverScreen = document.getElementById('gameover-screen');
+        const finalScoreText = document.getElementById('finalScore');
+        const restartBtn = document.getElementById('restartBtn');
+
+        // Game state variables
+        let level = 1;
+        let highScore = localStorage.getItem('asterisk_record_levels') || 0;
+        recordDisplay.innerText = `Record: ${highScore} Levels`;
+
+        let x = 0;
+        let y = 100;
+        let isEnterDown = false;
+        let obstacles = [];
+        let path = [];
+        let isGameOver = false;
+        
+        let currentModifier = 'normal';
+        const MODIFIERS = [
+            { id: 'normal', name: '', color: '#ffff00' },
+            { id: 'shield', name: '[SHIELD]', color: '#00ffff' },
+            { id: 'slow', name: '[SLOW]', color: '#00ff00' },
+            { id: 'fast', name: '[FAST]', color: '#ff0000' },
+            { id: 'reverse', name: '[REVERSE]', color: '#ff00ff' }
+        ];
+        
+        // Timing vars matching C# 20ms timer interval (50 FPS)
+        let lastTime = 0;
+        let accumulator = 0;
+        const TICK_RATE = 20; 
+        let animationFrameId;
+
+        // Input Listeners
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault(); 
+                isEnterDown = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                isEnterDown = false;
+            }
+        });
+
+        restartBtn.addEventListener('click', () => {
+            restartBtn.blur();
+            startNewGame();
+        });
+
+        function initLevel() {
+            x = 0;
+            y = 100; 
+            path = [{x, y}];
+            obstacles = [];
+            
+            // Generate Asterisks (Obstacles)
+            let numObstacles = level * 3;
+            for(let i = 0; i < numObstacles; i++) {
+                let ox = Math.floor(Math.random() * (290 - 10)) + 10;
+                let oy = Math.floor(Math.random() * 190);      
+                obstacles.push({x: ox, y: oy});
+            }
+
+            // Assign Level Modifier
+            if (level === 1) {
+                currentModifier = 'normal'; // Level 1 is always normal
+            } else {
+                // 40% chance for normal, 15% chance for each modifier
+                let r = Math.random();
+                if (r < 0.40) currentModifier = 'normal';
+                else if (r < 0.55) currentModifier = 'shield';
+                else if (r < 0.70) currentModifier = 'slow';
+                else if (r < 0.85) currentModifier = 'fast';
+                else currentModifier = 'reverse';
+            }
+
+            let modData = MODIFIERS.find(m => m.id === currentModifier);
+            let modText = modData.name ? ` <span style="color:${modData.color}">${modData.name}</span>` : "";
+            levelDisplay.innerHTML = `Level ${level}${modText}`;
+            scoreDisplay.innerText = `Completed: ${level - 1}`;
+        }
+
+        function startNewGame() {
+            level = 1;
+            isGameOver = false;
+            isEnterDown = false;
+            gameOverScreen.style.display = 'none';
+            
+            initLevel();
+            
+            lastTime = performance.now();
+            accumulator = 0;
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        function crash() {
+            isGameOver = true;
+            let completedLevels = level - 1;
+
+            if (completedLevels > highScore) {
+                highScore = completedLevels;
+                localStorage.setItem('asterisk_record_levels', highScore);
+                recordDisplay.innerText = `Record: ${highScore} Levels`;
+            }
+            
+            // Draw crash indicator (red explosion)
+            ctx.fillStyle = 'red';
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = 'red';
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            finalScoreText.innerText = `Completed: ${completedLevels} Levels`;
+            gameOverScreen.style.display = 'block';
+        }
+
+        function update() {
+            // Calculate movement speeds based on active level modifier
+            let dx = 1;
+            if (currentModifier === 'slow') dx = 0.5;
+            if (currentModifier === 'fast') dx = 2;
+
+            let dy = isEnterDown ? -1 : 1;
+            if (currentModifier === 'reverse') dy *= -1;
+
+            let prevX = x;
+            x += dx;
+            y += dy;
+            path.push({x, y});
+
+            // Level Up Condition
+            if (x >= canvas.width) {
+                level++;
+                initLevel();
+                return;
+            }
+
+            // --- Collisions ---
+
+            // 1. Top and Bottom wall collision (Still applies during shield)
+            if (y <= 0 || y >= canvas.height - 1) {
+                crash();
+                return;
+            }
+
+            // 2. Right border wall collision (allowing for safe exit gap between Y: 85 and 115)
+            if (prevX < canvas.width - 1 && x >= canvas.width - 1) {
+                if (y < 85 || y > 115) {
+                    crash();
+                    return;
+                }
+            }
+
+            // 3. Obstacle collisions
+            if (currentModifier !== 'shield') {
+                for (let obs of obstacles) {
+                    if (x >= obs.x - 1 && x <= obs.x + 2 && y >= obs.y - 1 && y <= obs.y + 2) {
+                        crash();
+                        return;
+                    }
+                }
+            }
+        }
+
+        function getTrailColor() {
+            return MODIFIERS.find(m => m.id === currentModifier).color;
+        }
+
+        function draw() {
+            // Clear background
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw Borders (1px white walls)
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, 1); 
+            ctx.fillRect(0, canvas.height - 1, canvas.width, 1); 
+            
+            ctx.fillRect(canvas.width - 1, 0, 1, 85);
+            ctx.fillRect(canvas.width - 1, 115, 1, canvas.height - 115);
+
+            // Draw Obstacles (2x2 white squares)
+            // If shield modifier is active, render obstacles slightly dimmed
+            ctx.fillStyle = currentModifier === 'shield' ? '#444' : 'white';
+            for(let obs of obstacles) {
+                ctx.fillRect(obs.x, obs.y, 2, 2);
+            }
+
+            // Draw Glowing Player Trail
+            if (path.length > 0) {
+                ctx.beginPath();
+                ctx.moveTo(path[0].x, path[0].y);
+                for (let i = 1; i < path.length; i++) {
+                    ctx.lineTo(path[i].x, path[i].y);
+                }
+                ctx.strokeStyle = getTrailColor();
+                ctx.lineWidth = 1.5;
+                ctx.lineJoin = 'round';
+                ctx.shadowBlur = 8;
+                ctx.shadowColor = ctx.strokeStyle;
+                ctx.stroke();
+                ctx.shadowBlur = 0; // Reset shadow for other elements
+            }
+        }
+
+        function gameLoop(timestamp) {
+            if (isGameOver) return;
+            
+            let deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+            accumulator += deltaTime;
+
+            while (accumulator >= TICK_RATE) {
+                update();
+                accumulator -= TICK_RATE;
+                if (isGameOver) break;
+            }
+            
+            if (!isGameOver) draw();
+            
+            if (!isGameOver) {
+                animationFrameId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // Boot up game
+        startNewGame();
+    </script>
+</body>
+</html>
